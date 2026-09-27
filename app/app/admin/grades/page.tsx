@@ -28,7 +28,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase/client";
 import type { Database } from "@/lib/types/database";
-import { Plus, MoveHorizontal as MoreHorizontal, Pencil, Trash2, Award, Eye, Save } from "lucide-react";
+import { Plus, MoveHorizontal as MoreHorizontal, Pencil, Trash2, Award, Eye, Save, Send, CircleCheck as CheckCircle2, Lock } from "lucide-react";
 
 type Assessment = Database["public"]["Tables"]["assessments"]["Row"];
 type Grade = Database["public"]["Tables"]["grades"]["Row"];
@@ -55,6 +55,18 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "outline"> = {
   draft: "outline", published: "default", validated: "secondary",
 };
 
+const GRADE_STATUS_LABELS: Record<string, string> = {
+  draft: "Brouillon",
+  submitted: "Soumise",
+  validated: "Validée",
+};
+
+const GRADE_STATUS_VARIANTS: Record<string, "default" | "secondary" | "outline"> = {
+  draft: "outline",
+  submitted: "default",
+  validated: "secondary",
+};
+
 export default function AssessmentsPage() {
   const { permissions, profile } = useAuth();
   const { toast } = useToast();
@@ -75,6 +87,7 @@ export default function AssessmentsPage() {
   const canUpdate = permissions.includes("assessments.update" as never);
   const canDelete = permissions.includes("assessments.delete" as never);
   const canGrade = permissions.includes("grades.create" as never) || permissions.includes("grades.update" as never);
+  const canValidate = permissions.includes("grades.validate" as never);
 
   useEffect(() => {
     if (profile?.institution_id) {
@@ -246,6 +259,7 @@ export default function AssessmentsPage() {
           open={!!gradeDialogAssessment}
           onOpenChange={(o) => !o && setGradeDialogAssessment(null)}
           profileId={profile?.id}
+          canValidate={canValidate}
           onSaved={fetch}
         />
       )}
@@ -267,12 +281,13 @@ export default function AssessmentsPage() {
 }
 
 function GradeEntryDialog({
-  assessment, open, onOpenChange, profileId, onSaved,
+  assessment, open, onOpenChange, profileId, canValidate, onSaved,
 }: {
   assessment: AssessmentWithRelations;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   profileId?: string;
+  canValidate: boolean;
   onSaved?: () => void;
 }) {
   const { toast } = useToast();
@@ -281,6 +296,7 @@ function GradeEntryDialog({
   const [scores, setScores] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -317,7 +333,11 @@ function GradeEntryDialog({
     return () => { cancelled = true; };
   }, [open, assessment.id, assessment.class_id]);
 
+  const isGradeValidated = (studentId: string) => grades[studentId]?.status === "validated";
+  const isGradeSubmitted = (studentId: string) => grades[studentId]?.status === "submitted";
+
   const saveGrade = async (studentId: string) => {
+    if (isGradeValidated(studentId)) return;
     const scoreStr = scores[studentId];
     if (scoreStr === undefined || scoreStr === "") return;
     const score = parseFloat(scoreStr);
@@ -328,12 +348,14 @@ function GradeEntryDialog({
     setSaving(true);
     try {
       const existing = grades[studentId];
+      const newStatus = existing?.status === "submitted" ? "submitted" : "draft";
       if (existing) {
         const { error } = await supabase
           .from("grades")
-          .update({ score, status: "draft", graded_by: profileId ?? null })
+          .update({ score, status: newStatus, graded_by: profileId ?? null })
           .eq("id", existing.id);
         if (error) throw error;
+        setGrades({ ...grades, [studentId]: { ...existing, score, status: newStatus as Grade["status"] } });
       } else {
         const { data, error } = await supabase
           .from("grades")
@@ -362,13 +384,15 @@ function GradeEntryDialog({
     setSaving(true);
     try {
       for (const enr of enrollments) {
+        if (isGradeValidated(enr.student_id)) continue;
         const scoreStr = scores[enr.student_id];
         if (scoreStr !== undefined && scoreStr !== "") {
           const score = parseFloat(scoreStr);
           if (!isNaN(score) && score >= 0 && score <= assessment.max_score) {
             const existing = grades[enr.student_id];
+            const newStatus = existing?.status === "submitted" ? "submitted" : "draft";
             if (existing) {
-              await supabase.from("grades").update({ score, graded_by: profileId ?? null }).eq("id", existing.id);
+              await supabase.from("grades").update({ score, status: newStatus, graded_by: profileId ?? null }).eq("id", existing.id);
             } else {
               await supabase.from("grades").insert({
                 assessment_id: assessment.id,
@@ -384,6 +408,7 @@ function GradeEntryDialog({
       }
       toast({ title: "Toutes les notes enregistrees" });
       onSaved?.();
+      onOpenChange(false);
     } catch (err) {
       toast({ title: "Erreur", description: err instanceof Error ? err.message : "Une erreur est survenue.", variant: "destructive" });
     } finally {
@@ -391,9 +416,98 @@ function GradeEntryDialog({
     }
   };
 
+  const submitGrade = async (studentId: string) => {
+    if (isGradeValidated(studentId)) return;
+    const existing = grades[studentId];
+    if (!existing) {
+      toast({ title: "Note non saisie", description: "Enregistrez d'abord la note.", variant: "destructive" });
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const { error } = await supabase
+        .from("grades")
+        .update({ status: "submitted" })
+        .eq("id", existing.id);
+      if (error) throw error;
+      setGrades({ ...grades, [studentId]: { ...existing, status: "submitted" as Grade["status"] } });
+      toast({ title: "Note soumise" });
+    } catch (err) {
+      toast({ title: "Erreur", description: err instanceof Error ? err.message : "Une erreur est survenue.", variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const submitAll = async () => {
+    setActionLoading(true);
+    try {
+      for (const enr of enrollments) {
+        const existing = grades[enr.student_id];
+        if (existing && existing.status === "draft") {
+          await supabase.from("grades").update({ status: "submitted" }).eq("id", existing.id);
+          setGrades((prev) => ({ ...prev, [enr.student_id]: { ...prev[enr.student_id], status: "submitted" as Grade["status"] } }));
+        }
+      }
+      toast({ title: "Notes soumises", description: "Toutes les notes brouillons ont été soumises." });
+    } catch (err) {
+      toast({ title: "Erreur", description: err instanceof Error ? err.message : "Une erreur est survenue.", variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const validateGrade = async (studentId: string) => {
+    if (!canValidate) return;
+    const existing = grades[studentId];
+    if (!existing || existing.status !== "submitted") {
+      toast({ title: "Note non soumise", description: "La note doit être soumise avant validation.", variant: "destructive" });
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const { error } = await supabase
+        .from("grades")
+        .update({ status: "validated", validated_by: profileId ?? null })
+        .eq("id", existing.id);
+      if (error) throw error;
+      setGrades({ ...grades, [studentId]: { ...existing, status: "validated" as Grade["status"], validated_by: profileId ?? null } });
+      toast({ title: "Note validée", description: "La note est désormais verrouillée." });
+    } catch (err) {
+      toast({ title: "Erreur", description: err instanceof Error ? err.message : "Une erreur est survenue.", variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const validateAll = async () => {
+    if (!canValidate) return;
+    setActionLoading(true);
+    try {
+      let count = 0;
+      for (const enr of enrollments) {
+        const existing = grades[enr.student_id];
+        if (existing && existing.status === "submitted") {
+          const { error } = await supabase
+            .from("grades")
+            .update({ status: "validated", validated_by: profileId ?? null })
+            .eq("id", existing.id);
+          if (error) throw error;
+          setGrades((prev) => ({ ...prev, [enr.student_id]: { ...prev[enr.student_id], status: "validated" as Grade["status"], validated_by: profileId ?? null } }));
+          count++;
+        }
+      }
+      toast({ title: "Notes validées", description: `${count} note(s) validée(s).` });
+    } catch (err) {
+      toast({ title: "Erreur", description: err instanceof Error ? err.message : "Une erreur est survenue.", variant: "destructive" });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
+      <DialogContent className="sm:max-w-[650px]">
         <DialogHeader>
           <DialogTitle>Saisie des notes - {assessment.title}</DialogTitle>
         </DialogHeader>
@@ -403,11 +517,21 @@ function GradeEntryDialog({
           <EmptyState title="Aucun etudiant" message="Aucun etudiant actif dans cette classe." />
         ) : (
           <>
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
               <p className="text-sm text-muted-foreground">Bareme: {assessment.max_score} | Coefficient: {assessment.coefficient}</p>
-              <Button size="sm" onClick={saveAll} disabled={saving}>
-                <Save className="w-4 h-4 mr-2" /> Tout enregistrer
-              </Button>
+              <div className="flex gap-2">
+                {canValidate && (
+                  <Button size="sm" variant="outline" onClick={validateAll} disabled={actionLoading || saving}>
+                    <CheckCircle2 className="w-4 h-4 mr-1" /> Tout valider
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={submitAll} disabled={actionLoading || saving}>
+                  <Send className="w-4 h-4 mr-1" /> Tout soumettre
+                </Button>
+                <Button size="sm" onClick={saveAll} disabled={saving || actionLoading}>
+                  <Save className="w-4 h-4 mr-2" /> Tout enregistrer
+                </Button>
+              </div>
             </div>
             <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
               <Table>
@@ -415,32 +539,60 @@ function GradeEntryDialog({
                   <TableRow>
                     <TableHead>Matricule</TableHead>
                     <TableHead>Note / {assessment.max_score}</TableHead>
-                    <TableHead className="w-[80px]" />
+                    <TableHead>Statut</TableHead>
+                    <TableHead className="w-[120px]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {enrollments.map((enr) => (
-                    <TableRow key={enr.id}>
-                      <TableCell className="font-medium">{enr.students?.student_number ?? "-"}</TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min="0"
-                          max={assessment.max_score}
-                          step="0.25"
-                          value={scores[enr.student_id] ?? ""}
-                          onChange={(e) => setScores({ ...scores, [enr.student_id]: e.target.value })}
-                          className="w-24"
-                          disabled={saving}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Button size="sm" variant="outline" onClick={() => saveGrade(enr.student_id)} disabled={saving}>
-                          <Save className="w-3 h-3" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {enrollments.map((enr) => {
+                    const validated = isGradeValidated(enr.student_id);
+                    const submitted = isGradeSubmitted(enr.student_id);
+                    const hasGrade = !!grades[enr.student_id];
+                    return (
+                      <TableRow key={enr.id}>
+                        <TableCell className="font-medium">{enr.students?.student_number ?? "-"}</TableCell>
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="0"
+                            max={assessment.max_score}
+                            step="0.25"
+                            value={scores[enr.student_id] ?? ""}
+                            onChange={(e) => setScores({ ...scores, [enr.student_id]: e.target.value })}
+                            className="w-24"
+                            disabled={saving || actionLoading || validated}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {hasGrade ? (
+                            <Badge variant={GRADE_STATUS_VARIANTS[grades[enr.student_id].status] ?? "outline"}>
+                              {validated && <Lock className="w-3 h-3 mr-1" />}
+                              {GRADE_STATUS_LABELS[grades[enr.student_id].status] ?? grades[enr.student_id].status}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline">Nouvelle</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex gap-1">
+                            <Button size="sm" variant="outline" onClick={() => saveGrade(enr.student_id)} disabled={saving || actionLoading || validated} title="Enregistrer">
+                              <Save className="w-3 h-3" />
+                            </Button>
+                            {hasGrade && !submitted && !validated && (
+                              <Button size="sm" variant="outline" onClick={() => submitGrade(enr.student_id)} disabled={actionLoading || saving} title="Soumettre">
+                                <Send className="w-3 h-3" />
+                              </Button>
+                            )}
+                            {canValidate && submitted && !validated && (
+                              <Button size="sm" variant="default" onClick={() => validateGrade(enr.student_id)} disabled={actionLoading || saving} title="Valider">
+                                <CheckCircle2 className="w-3 h-3" />
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </div>

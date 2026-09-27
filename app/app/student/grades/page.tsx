@@ -19,6 +19,11 @@ const STATUS_VARIANTS: Record<string, "default" | "secondary" | "outline"> = {
 export default function StudentGradesPage() {
   const { grades, loading } = useStudentData();
 
+  const visibleGrades = grades.filter((g) => {
+    const asmtStatus = g.assessments?.status;
+    return g.status === "validated" && (asmtStatus === "published" || asmtStatus === "validated");
+  });
+
   if (loading) {
     return <div><PageHeader title="Mes notes" /><LoadingState /></div>;
   }
@@ -27,7 +32,7 @@ export default function StudentGradesPage() {
     <div>
       <PageHeader title="Mes notes" description="Résultats de mes évaluations" />
       <Card className="p-4">
-        {grades.length === 0 ? (
+        {visibleGrades.length === 0 ? (
           <EmptyState title="Aucune note" message="Aucune note n'a été publiée pour le moment." />
         ) : (
           <div className="overflow-x-auto">
@@ -45,7 +50,7 @@ export default function StudentGradesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {grades.map((g) => {
+                {visibleGrades.map((g) => {
                   const maxScore = g.assessments?.max_score ?? 20;
                   const normalized = maxScore > 0 ? (g.score / maxScore) * 20 : 0;
                   return (

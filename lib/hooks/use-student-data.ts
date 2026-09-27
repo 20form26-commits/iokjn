@@ -116,7 +116,7 @@ export function useStudentData(): StudentPortalData {
           supabase.from("enrollments").select("*, courses(name, programs(name)), classes(name, capacity, room), academic_years(name)").eq("student_id", sid).order("enrollment_date", { ascending: false }),
           supabase.from("schedules").select("*, classes(name), subjects(name, code), teachers(teacher_number, specialization)").order("day_of_week", { ascending: true }).order("start_time", { ascending: true }),
           supabase.from("attendance").select("*, schedules(*, classes(name), subjects(name, code), teachers(teacher_number, specialization))").eq("student_id", sid).order("date", { ascending: false }),
-          supabase.from("grades").select("*, assessments(*, classes(name), subjects(name, code))").eq("student_id", sid).order("created_at", { ascending: false }),
+          supabase.from("grades").select("*, assessments(*, classes(name), subjects(name, code))").eq("student_id", sid).eq("status", "validated").order("created_at", { ascending: false }),
           supabase.from("payment_plans").select("*, courses(name), academic_years(name)").eq("student_id", sid).order("created_at", { ascending: false }),
           supabase.from("document_students").select("document_id, documents(*)").eq("student_id", sid),
           supabase.from("notifications").select("*").eq("profile_id", studentData.profile_id ?? "").order("created_at", { ascending: false }).limit(50),
@@ -128,7 +128,10 @@ export function useStudentData(): StudentPortalData {
         const newEnrollments = enrRes.data ?? [];
         const newSchedules = schRes.data ?? [];
         const newAttendance = attRes.data ?? [];
-        const newGrades = gradeRes.data ?? [];
+        const newGrades = (gradeRes.data ?? []).filter((g) => {
+          const asmtStatus = g.assessments?.status;
+          return asmtStatus === "published" || asmtStatus === "validated";
+        }) as GradeWithAssessment[];
         const newPaymentPlans = planRes.data ?? [];
         const newDocuments = (docRes.data ?? []).map((d: unknown) => (d as { documents: Document }).documents).filter(Boolean);
         const newNotifications = notifRes.data ?? [];

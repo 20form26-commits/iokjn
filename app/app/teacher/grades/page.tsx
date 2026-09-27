@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Save } from "lucide-react";
+import { Save, Lock } from "lucide-react";
 
 interface AssessmentWithRelations {
   id: string;
@@ -37,6 +37,18 @@ interface GradeRow {
   score: number;
   status: string;
 }
+
+const GRADE_STATUS_LABELS: Record<string, string> = {
+  draft: "Brouillon",
+  submitted: "Saisie",
+  validated: "Validée",
+};
+
+const GRADE_STATUS_VARIANTS: Record<string, "default" | "secondary" | "outline"> = {
+  draft: "outline",
+  submitted: "default",
+  validated: "secondary",
+};
 
 export default function TeacherGradesPage() {
   const { toast } = useToast();
@@ -153,8 +165,9 @@ export default function TeacherGradesPage() {
         if (isNaN(score)) continue;
 
         const existing = grades[student.id];
+        if (existing && existing.status === "validated") continue;
         if (existing) {
-          await supabase.from("grades").update({ score, status: "submitted", graded_by: user?.id ?? "" }).eq("id", existing.id);
+          await supabase.from("grades").update({ score, status: existing.status === "submitted" ? "submitted" : "submitted", graded_by: user?.id ?? "" }).eq("id", existing.id);
         } else {
           await supabase.from("grades").insert({
             assessment_id: selectedAssessment,
@@ -237,15 +250,21 @@ export default function TeacherGradesPage() {
                             type="number"
                             step="0.25"
                             max={assessments.find((a) => a.id === selectedAssessment)?.max_score ?? 20}
-                            className="w-20 text-right rounded border px-2 py-1 text-sm"
+                            className="w-20 text-right rounded border px-2 py-1 text-sm disabled:bg-muted disabled:cursor-not-allowed"
                             value={scoreInputs[s.id] ?? ""}
                             onChange={(e) => setScoreInputs({ ...scoreInputs, [s.id]: e.target.value })}
+                            disabled={saving || grades[s.id]?.status === "validated"}
                           />
                         </TableCell>
                         <TableCell>
-                          <Badge variant={grades[s.id] ? "default" : "outline"}>
-                            {grades[s.id] ? "Saisie" : "Nouvelle"}
-                          </Badge>
+                          {grades[s.id] ? (
+                            <Badge variant={GRADE_STATUS_VARIANTS[grades[s.id].status] ?? "outline"}>
+                              {grades[s.id].status === "validated" && <Lock className="w-3 h-3 mr-1" />}
+                              {GRADE_STATUS_LABELS[grades[s.id].status] ?? grades[s.id].status}
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline">Nouvelle</Badge>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
